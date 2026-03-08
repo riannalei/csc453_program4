@@ -30,8 +30,10 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include <limits.h>
 
 #include "queue.h"
+
 
 /* ------------------------------------------------------------------ */
 /*  Filter definitions                                                 */
@@ -78,6 +80,37 @@ typedef struct {
 } dev_ino_t;
 
 /* ------------------------------------------------------------------ */
+/* Cycle detection helpers                                             */
+/* ------------------------------------------------------------------ */
+
+typedef struct visited_node {
+    dev_t dev;
+    ino_t ino;
+    struct visited_node *next;
+} visited_node_t;
+
+static visited_node_t *g_visited_list = NULL;
+
+/* returns true if we've already seen this directory */
+static bool is_cycle(dev_t dev, ino_t ino) {
+    visited_node_t *curr = g_visited_list;
+    while (curr) {
+        if (curr->dev == dev && curr->ino == ino) return true;
+        curr = curr->next;
+    }
+    return false;
+}
+
+/* adds a directory to our "seen" list */
+static void mark_visited(dev_t dev, ino_t ino) {
+    visited_node_t *new_node = malloc(sizeof(visited_node_t));
+    new_node->dev = dev;
+    new_node->ino = ino;
+    new_node->next = g_visited_list;
+    g_visited_list = new_node;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Global configuration                                               */
 /* ------------------------------------------------------------------ */
 
@@ -103,10 +136,39 @@ static time_t g_now;
  */
 static bool filter_matches(const filter_t *f, const char *path,
                            const struct stat *sb) {
-    (void)f;
-    (void)path;
-    (void)sb;
+    // (void)f;
+    // (void)path;
+    // (void)sb;
     /* TODO: Your implementation here */
+    switch (f->kind) {
+        case FILTER_NAME: {
+            /* Use strrchr to get just the filename, then fnmatch to compare */
+            const char *filename = strrchr(path, '/');
+            filename = (filename == NULL) ? path : filename + 1;
+            return fnmatch(f->filter.pattern, filename, 0) == 0;
+        }
+        case FILTER_TYPE:
+            if (f->filter.type_char == 'f') return S_ISREG(sb->st_mode);
+            if (f->filter.type_char == 'd') return S_ISDIR(sb->st_mode);
+            if (f->filter.type_char == 'l') return S_ISLNK(sb->st_mode);
+            return false;
+        case FILTER_PERM:
+            /* Compare exact octal bits */
+            return (sb->st_mode & 07777) == f->filter.perm_mode;
+        case FILTER_SIZE: {
+            off_t actual = sb->st_size;
+            off_t target = f->filter.size.size_bytes;
+            if (f->filter.size.size_cmp == SIZE_CMP_GREATER) return actual > target;
+            if (f->filter.size.size_cmp == SIZE_CMP_LESS) return actual < target;
+            return actual == target;
+        }
+        case FILTER_MTIME: {
+            /* Calculate age in days: difftime returns seconds */
+            double seconds = difftime(g_now, sb->st_mtime);
+            int days = (int)(seconds / 86400);
+            return days <= f->filter.mtime_days;
+        }
+    }
     return false;
 }
 
@@ -163,9 +225,22 @@ static void print_usage(const char *progname) {
  * Examples: "100c" -> 100, "4k" -> 4096, "2M" -> 2097152, "512" -> 512
  */
 static off_t parse_size(const char *arg) {
-    (void)arg;
     /* TODO: Your implementation here */
-    return 0;
+    char *endptr;
+    /* Use strtoll to handle large file sizes correctly */
+    long long value = strtoll(arg, &endptr, 10);
+
+    /* Check the suffix at the end of the numeric string */
+    if (*endptr == 'c') {
+        return (off_t)value;
+    } else if (*endptr == 'k') {
+        return (off_t)(value * 1024);
+    } else if (*endptr == 'M') {
+        return (off_t)(value * 1024 * 1024);
+    }
+    
+    /* Default to bytes if no suffix is provided */
+    return (off_t)value;
 }
 
 /*
@@ -182,11 +257,78 @@ static off_t parse_size(const char *arg) {
  * Exit with an error for unknown options or missing filter arguments.
  */
 static char **parse_args(int argc, char *argv[], int *npaths) {
-    (void)argc;
-    (void)argv;
-    (void)npaths;
     /* TODO: Your implementation here */
-    return NULL;
+    int i = 1;
+    /* 1. Parse Options */
+    while (i < argc && argv[i][0] == '-') {
+        if (strcmp(argv[i], "-L") == 0) {
+            g_follow_links = true;
+        } else if (strcmp(argv[i], "-xdev") == 0) {
+            g_xdev = true;
+        } else if (strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            exit(0);
+        } else {
+            break; 
+        }
+        i++;
+    }
+
+    /* 2. Parse Paths */
+    int path_start = i;
+    int path_count = 0;
+    while (i < argc && argv[i][0] != '-') {
+        path_count++;
+        i++;
+    }
+
+    char **paths;
+    if (path_count == 0) {
+        paths = malloc(sizeof(char *));
+        paths[0] = strdup(".");
+        *npaths = 1;
+    } else {
+        paths = malloc(sizeof(char *) * path_count);
+        for (int j = 0; j < path_count; j++) {
+            paths[j] = strdup(argv[path_start + j]);
+        }
+        *npaths = path_count;
+    }
+
+    /* 3. Parse Filters */
+    g_filters = malloc(sizeof(filter_t) * (argc - i));
+    while (i < argc) {
+        filter_t *f = &g_filters[g_nfilters];
+        if (strcmp(argv[i], "-name") == 0) {
+            f->kind = FILTER_NAME;
+            f->filter.pattern = argv[++i];
+        } else if (strcmp(argv[i], "-type") == 0) {
+            f->kind = FILTER_TYPE;
+            f->filter.type_char = argv[++i][0];
+        } else if (strcmp(argv[i], "-size") == 0) {
+            f->kind = FILTER_SIZE;
+            char *size_str = argv[++i];
+            if (size_str[0] == '+') {
+                f->filter.size.size_cmp = SIZE_CMP_GREATER;
+                size_str++;
+            } else if (size_str[0] == '-') {
+                f->filter.size.size_cmp = SIZE_CMP_LESS;
+                size_str++;
+            } else {
+                f->filter.size.size_cmp = SIZE_CMP_EXACT;
+            }
+            f->filter.size.size_bytes = parse_size(size_str);
+        } else if (strcmp(argv[i], "-mtime") == 0) {
+            f->kind = FILTER_MTIME;
+            f->filter.mtime_days = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-perm") == 0) {
+            f->kind = FILTER_PERM;
+            f->filter.perm_mode = (mode_t)strtoul(argv[++i], NULL, 8);
+        }
+        g_nfilters++;
+        i++;
+    }
+    return paths;
 }
 
 /* ------------------------------------------------------------------ */
@@ -217,9 +359,59 @@ static char **parse_args(int argc, char *argv[], int *npaths) {
  * The provided queue library (queue.h) implements a generic FIFO queue.
  */
 static void bfs_traverse(char **start_paths, int npaths) {
-    (void)start_paths;
-    (void)npaths;
+    // (void)start_paths;
+    // (void)npaths;
     /* TODO: Your implementation here */
+    queue_t q;
+    queue_init(&q);
+    /* Initialize queue with starting paths */
+    for (int i = 0; i < npaths; i++) {
+        queue_enqueue(&q, strdup(start_paths[i]));
+    }
+
+    while (!queue_is_empty(&q)) {
+        char *curr_path = queue_dequeue(&q);
+        struct stat sb;
+
+        /* Use lstat by default, or stat if -L is set */
+        int (*stat_func)(const char *, struct stat *) = g_follow_links ? stat : lstat;
+
+        if (stat_func(curr_path, &sb) != 0) {
+            fprintf(stderr, "bfind: '%s': %s\n", curr_path, strerror(errno));
+            free(curr_path);
+            continue;
+        }
+
+        /* Print path if it matches all filters */
+        if (matches_all_filters(curr_path, &sb)) {
+            printf("%s\n", curr_path);
+        }
+
+        /* If it's a directory, prepare to explore its children */
+        if (S_ISDIR(sb.st_mode)) {
+            DIR *dir = opendir(curr_path);
+            if (!dir) {
+                fprintf(stderr, "bfind: cannot open '%s': %s\n", curr_path, strerror(errno));
+            } else {
+                struct dirent *entry;
+                while ((entry = readdir(dir)) != NULL) {
+                    /* CRITICAL: Skip "." and ".." to avoid infinite loops */
+                    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+                        continue;
+                    }
+
+                    /* Build child path: curr_path + "/" + entry->d_name */
+                    char child_path[PATH_MAX];
+                    snprintf(child_path, sizeof(child_path), "%s/%s", curr_path, entry->d_name);
+                    
+                    queue_enqueue(&q, strdup(child_path));
+                }
+                closedir(dir);
+            }
+        }
+        free(curr_path);
+    }
+    queue_destroy(&q);
 }
 
 /* ------------------------------------------------------------------ */
