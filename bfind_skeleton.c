@@ -104,10 +104,24 @@ static bool is_cycle(dev_t dev, ino_t ino) {
 /* adds a directory to our "seen" list */
 static void mark_visited(dev_t dev, ino_t ino) {
     visited_node_t *new_node = malloc(sizeof(visited_node_t));
+    if (!new_node) {
+        fprintf(stderr, "bfind: malloc failed\n");
+        return;
+    }
     new_node->dev = dev;
     new_node->ino = ino;
     new_node->next = g_visited_list;
     g_visited_list = new_node;
+}
+
+static void free_visited_list(void) {
+    visited_node_t *p = g_visited_list;
+    while (p) {
+        visited_node_t *next = p->next;
+        free(p);
+        p = next;
+    }
+    g_visited_list = NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -389,6 +403,13 @@ static void bfs_traverse(char **start_paths, int npaths) {
 
         /* If it's a directory, prepare to explore its children */
         if (S_ISDIR(sb.st_mode)) {
+            if (g_follow_links) {
+                if (is_cycle(sb.st_dev, sb.st_ino)) {
+                    free(curr_path);
+                    continue;
+                }
+                mark_visited(sb.st_dev, sb.st_ino);
+            }
             DIR *dir = opendir(curr_path);
             if (!dir) {
                 fprintf(stderr, "bfind: cannot open '%s': %s\n", curr_path, strerror(errno));
@@ -412,6 +433,7 @@ static void bfs_traverse(char **start_paths, int npaths) {
         free(curr_path);
     }
     queue_destroy(&q);
+    free_visited_list();
 }
 
 /* ------------------------------------------------------------------ */

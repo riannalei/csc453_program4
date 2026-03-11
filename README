@@ -17,6 +17,7 @@ used a lot of strdup for the paths in the queue, which means we have a bunch of 
 kind of annoyign to keep testing on unix so just use 
 leaks --atExit -- ./bfind my_test 
 FOR MAC
+leaks -q --atExit -- ./bfind my_test <- (shorter version)
 
 
 ## COMPLETED:
