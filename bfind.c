@@ -158,7 +158,6 @@ static filter_t *g_filters = NULL;
 static int g_nfilters = 0;
 static bool g_follow_links = false;
 static bool g_xdev = false;
-static dev_t g_start_dev = 0;
 static time_t g_now;
 
 /* ------------------------------------------------------------------ */
