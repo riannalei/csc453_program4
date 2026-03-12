@@ -1,36 +1,6 @@
 # CSC453 - Program 4: bfind
 Names: Rianna Lei & Nathan Luong
 
-## NOTES (delete when done): 
-I did all of the argument parsing and filters, passed all sanity tests. The rest is like system-level stuff... might be hard not sure
-
-for cycle detection... right now, if you run ./bfind -L on a directory with symlinks that point back to parent folders the program will loop forever or crash. so u need to implement the logic to track directories we’ve already visited. I already added a visited_node_t struct and some helper functions (is_cycle and mark_visited) at the top of the file to get you started. Inside bfs_traverse, when -L is active, you need to check if a directory's (st_dev, st_ino) is already in our list before descending into it.
-
-^^ use this test ./bfind -L my_test
-
-
-for -xdev: compare sb.st_dev to g_start_dev. if they don't match and g_xdev is true, don't descend. If they don’t match and g_xdev is true, just skip that directory.
-
-used a lot of strdup for the paths in the queue, which means we have a bunch of memory leaks prob. so we need to make sure we malloc or strdup gets free()ed before the program finishes. 
-
-^^ Run valgrind --leak-check=full ./bfind my_test and try to get it to say nothing is lost (ONLY WORKS ON UNIX)
-kind of annoyign to keep testing on unix so just use 
-leaks --atExit -- ./bfind my_test 
-FOR MAC
-leaks -q --atExit -- ./bfind my_test <- (shorter version)
-
-
-## COMPLETED:
-- [x] Set up the BFS engine and the queue logic
-- [x] Finished all the basic filters (-name, -type, -size, -mtime, -perm)
-- [x] Passed the initial 15 sanity tests
-- [x] Conceptual questions
-
-## TODO:
-- [] Use the dev_ino_t struct to keep a list of visited directories so we don't loop forever when using -L
-- [] Make sure we don't jump into different filesystems (like a USB drive or /proc) if the user uses the -xdev flag
-- [] Use valgrind to find and fix all the memory leaks from strdup and the queue
-
 ## Conceptual Questions:
 1. Symlinks vs. Hard Links
 A hard link is a direct entry in a directory pointing to an inode, effectively becoming another name for the file; the OS forbids hard-linking directories to prevent permanent structural cycles. A symbolic link is just a text file containing a path to another file or directory. Because symlinks can point to ancestor directories, they can easily create infinite loops during traversal unless specifically detected.

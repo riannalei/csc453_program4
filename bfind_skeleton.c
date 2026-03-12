@@ -413,31 +413,44 @@ static void bfs_traverse(char **start_paths, int npaths) {
         
         if (stat_func(start_paths[i], &sb) != 0) {
             fprintf(stderr, "bfind: '%s': %s\n", start_paths[i], strerror(errno));
+            free(start_paths[i]);
             continue;
         }
 
         qitem_t *it = qitem_new(start_paths[i], sb.st_dev);
         if (!it) {
             fprintf(stderr, "bfind: malloc failed\n");
+            free(start_paths[i]);
             continue;
         }
 
         queue_enqueue(&q, it);
+        free(start_paths[i]);
     }
+    free(start_paths);
 
     while (!queue_is_empty(&q)) {
         qitem_t *it = queue_dequeue(&q);
         char *curr_path = it->path;
-        struct stat sb;
-
-        if (stat_func(curr_path, &sb) != 0) {
+        
+        // Always lstat for filtering — so -type l can see symlinks
+        struct stat lsb;
+        if (lstat(curr_path, &lsb) != 0) {
             fprintf(stderr, "bfind: '%s': %s\n", curr_path, strerror(errno));
-            free(curr_path);
+            qitem_free(it);
             continue;
         }
 
+        // For traversal decisions, follow links only if -L
+        struct stat sb;
+        if (g_follow_links) {
+            if (stat(curr_path, &sb) != 0) sb = lsb; // fallback if target is broken
+        } else {
+            sb = lsb;
+        }
+
         /* Print path if it matches all filters */
-        if (matches_all_filters(curr_path, &sb)) {
+        if (matches_all_filters(curr_path, &lsb)) {
             printf("%s\n", curr_path);
         }
 
@@ -449,15 +462,18 @@ static void bfs_traverse(char **start_paths, int npaths) {
             }
 
             if (g_follow_links) {
-                if (is_cycle(sb.st_dev, sb.st_ino)) {
-                    free(curr_path);
-                    continue;
-                }
-                mark_visited(sb.st_dev, sb.st_ino);
+                if (S_ISLNK(lsb.st_mode)) {
+                    if (is_cycle(sb.st_dev, sb.st_ino)) {
+                        qitem_free(it);
+                        continue;
+                    }
+                    mark_visited(sb.st_dev, sb.st_ino);
+                }   
             }
             DIR *dir = opendir(curr_path);
             if (!dir) {
                 fprintf(stderr, "bfind: cannot open '%s': %s\n", curr_path, strerror(errno));
+                continue;
             } else {
                 struct dirent *entry;
                 while ((entry = readdir(dir)) != NULL) {
@@ -469,8 +485,33 @@ static void bfs_traverse(char **start_paths, int npaths) {
                     /* Build child path: curr_path + "/" + entry->d_name */
                     char child_path[PATH_MAX];
                     snprintf(child_path, sizeof(child_path), "%s/%s", curr_path, entry->d_name);
-                    
+
+                    // struct stat csb;
+                    // if (stat_func(child_path, &csb) != 0) {
+                    //     fprintf(stderr, "bfind: '%s': %s\n", child_path, strerror(errno));
+                    //     continue;
+                    // }
+
+                    // /* only directories get enqueued (we only descend into dirs) */
+                    // if (!S_ISDIR(csb.st_mode)) continue;
+
+                    // /* respect -xdev */
+                    // if (g_xdev && csb.st_dev != it->root_dev) continue;
+
+                    // /* when following links, avoid enqueueing already-seen (st_dev,st_ino) */
+                    // if (g_follow_links) {
+                    //     if (is_cycle(csb.st_dev, csb.st_ino)) {
+                    //         continue;
+                    //     }
+                    //     /* mark it now so other paths won't enqueue the same directory */
+                    //     mark_visited(csb.st_dev, csb.st_ino);
+                    // }
+
                     qitem_t *child = qitem_new(child_path, it->root_dev);
+                    if (!child) {
+                        fprintf(stderr, "bfind: malloc failed\n");
+                        continue;
+                    }
                     queue_enqueue(&q, child);
                 }
                 closedir(dir);
