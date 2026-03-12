@@ -535,7 +535,6 @@ int main(int argc, char *argv[]) {
 
     bfs_traverse(paths, npaths);
 
-    free(paths);
     free(g_filters);
     return 0;
 }
