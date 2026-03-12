@@ -486,27 +486,6 @@ static void bfs_traverse(char **start_paths, int npaths) {
                     char child_path[PATH_MAX];
                     snprintf(child_path, sizeof(child_path), "%s/%s", curr_path, entry->d_name);
 
-                    // struct stat csb;
-                    // if (stat_func(child_path, &csb) != 0) {
-                    //     fprintf(stderr, "bfind: '%s': %s\n", child_path, strerror(errno));
-                    //     continue;
-                    // }
-
-                    // /* only directories get enqueued (we only descend into dirs) */
-                    // if (!S_ISDIR(csb.st_mode)) continue;
-
-                    // /* respect -xdev */
-                    // if (g_xdev && csb.st_dev != it->root_dev) continue;
-
-                    // /* when following links, avoid enqueueing already-seen (st_dev,st_ino) */
-                    // if (g_follow_links) {
-                    //     if (is_cycle(csb.st_dev, csb.st_ino)) {
-                    //         continue;
-                    //     }
-                    //     /* mark it now so other paths won't enqueue the same directory */
-                    //     mark_visited(csb.st_dev, csb.st_ino);
-                    // }
-
                     qitem_t *child = qitem_new(child_path, it->root_dev);
                     if (!child) {
                         fprintf(stderr, "bfind: malloc failed\n");
