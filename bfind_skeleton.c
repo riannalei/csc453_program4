@@ -68,6 +68,32 @@ typedef struct {
 } filter_t;
 
 /* ------------------------------------------------------------------ */
+/*  Implement -xdev                                                 */
+/* ------------------------------------------------------------------ */
+typedef struct {
+    char *path;
+    dev_t root_dev;   /* device of the start path this item belongs to */
+} qitem_t;
+
+static qitem_t *qitem_new(const char *path, dev_t root_dev) {
+    qitem_t *it = malloc(sizeof(*it));
+    if (!it) return NULL;
+    it->path = strdup(path);
+    if (!it->path) {
+        free(it);
+        return NULL;
+    }
+    it->root_dev = root_dev;
+    return it;
+}
+
+static void qitem_free(qitem_t *it) {
+    if (!it) return;
+    free(it->path);
+    free(it);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Cycle detection                                                    */
 /*                                                                     */
 /*  A file's true on-disk identity is its (st_dev, st_ino) pair.       */
@@ -378,17 +404,31 @@ static void bfs_traverse(char **start_paths, int npaths) {
     /* TODO: Your implementation here */
     queue_t q;
     queue_init(&q);
+
+    /* Use lstat by default, or stat if -L is set */
+    int (*stat_func)(const char *, struct stat *) = g_follow_links ? stat : lstat;
     /* Initialize queue with starting paths */
     for (int i = 0; i < npaths; i++) {
-        queue_enqueue(&q, strdup(start_paths[i]));
+        struct stat sb;
+        
+        if (stat_func(start_paths[i], &sb) != 0) {
+            fprintf(stderr, "bfind: '%s': %s\n", start_paths[i], strerror(errno));
+            continue;
+        }
+
+        qitem_t *it = qitem_new(start_paths[i], sb.st_dev);
+        if (!it) {
+            fprintf(stderr, "bfind: malloc failed\n");
+            continue;
+        }
+
+        queue_enqueue(&q, it);
     }
 
     while (!queue_is_empty(&q)) {
-        char *curr_path = queue_dequeue(&q);
+        qitem_t *it = queue_dequeue(&q);
+        char *curr_path = it->path;
         struct stat sb;
-
-        /* Use lstat by default, or stat if -L is set */
-        int (*stat_func)(const char *, struct stat *) = g_follow_links ? stat : lstat;
 
         if (stat_func(curr_path, &sb) != 0) {
             fprintf(stderr, "bfind: '%s': %s\n", curr_path, strerror(errno));
@@ -403,6 +443,11 @@ static void bfs_traverse(char **start_paths, int npaths) {
 
         /* If it's a directory, prepare to explore its children */
         if (S_ISDIR(sb.st_mode)) {
+            if (g_xdev && sb.st_dev != it->root_dev) {
+                qitem_free(it);
+                continue;
+            }
+
             if (g_follow_links) {
                 if (is_cycle(sb.st_dev, sb.st_ino)) {
                     free(curr_path);
@@ -425,12 +470,13 @@ static void bfs_traverse(char **start_paths, int npaths) {
                     char child_path[PATH_MAX];
                     snprintf(child_path, sizeof(child_path), "%s/%s", curr_path, entry->d_name);
                     
-                    queue_enqueue(&q, strdup(child_path));
+                    qitem_t *child = qitem_new(child_path, it->root_dev);
+                    queue_enqueue(&q, child);
                 }
                 closedir(dir);
             }
         }
-        free(curr_path);
+        qitem_free(it);
     }
     queue_destroy(&q);
     free_visited_list();
